@@ -33,6 +33,7 @@ import javax.tools.JavaFileObject;
 import com.sun.source.tree.IdentifierTree;
 import com.sun.source.tree.MemberReferenceTree.ReferenceMode;
 import com.sun.source.tree.MemberSelectTree;
+import com.sun.source.tree.Tree;
 import com.sun.source.tree.TreeVisitor;
 import com.sun.source.util.SimpleTreeVisitor;
 import com.sun.tools.javac.code.*;
@@ -3134,13 +3135,57 @@ public class Attr extends JCTree.Visitor {
     public void visitIndexed(JCArrayAccess tree) {
         Type owntype = types.createErrorType(tree.type);
         Type atype = attribExpr(tree.indexed, env);
-        attribExpr(tree.index, env, syms.intType);
-        if (types.isArray(atype))
+        if (types.isArray(atype)) {
+            attribExpr(tree.index, env, syms.intType);
             owntype = types.elemtype(atype);
-        else if (!atype.hasTag(ERROR))
-            log.error(tree.pos(), "array.req.but.found", atype);
+        } else if (!atype.hasTag(ERROR)) {
+            attribExpr(tree.index, env);
+            boolean ok = false;
+            if (env.tree.getKind() == Tree.Kind.ASSIGNMENT && ((JCAssign)env.tree).lhs == tree) {
+                JCAssign ass = (JCAssign) env.tree;
+                Type rhstype = attribExpr(ass.rhs, env);
+                List<Type> argtypes = List.of(tree.index.type, rhstype);
+                Symbol m = findMethod(atype, "set", argtypes);
+                if (m.kind != Kinds.MTH)
+                    m = findMethod(atype, "put", argtypes); // Map#put
+                if (m.kind == Kinds.MTH) {
+                    JCMethodInvocation mi = make.Apply(null, make.Select(tree.indexed, m), List.of(tree.index, ass.rhs));
+                    mi.type = attribExpr(mi, env);
+                    translateMap.put(ass, mi);
+                    owntype = rhstype;
+                    ok = true;
+                }
+            } else {
+                Symbol m = findMethod(atype, "get", List.of(tree.index.type));
+                if (m.kind == Kinds.MTH) {
+                    JCMethodInvocation mi = make.Apply(null, make.Select(tree.indexed, m), List.of(tree.index));
+                    attribExpr(mi, env);
+                    translateMap.put(tree, mi);
+                    owntype = mi.type;
+                    ok = true;
+                }
+            }
+            if (!ok)
+                log.error(tree.pos(), "array.req.but.found", atype);
+        }
         if ((pkind() & VAR) == 0) owntype = capture(owntype);
         result = check(tree, owntype, VAR, resultInfo);
+    }
+
+    private Symbol findMethod(Type site, String name, List<Type> argtypes) {
+        Resolve.MethodResolutionContext newrc = null;
+        try {
+            if (rs.currentResolutionContext == null) { // rc.findMethod requires resolution context
+                newrc = rs.new MethodResolutionContext();
+                newrc.step = Resolve.MethodResolutionPhase.BOX; // allow autoboxing, no varargs
+                newrc.methodCheck = rs.resolveMethodCheck;
+                rs.currentResolutionContext = newrc;
+            }
+            return rs.findMethod(env, site, names.fromString(name), argtypes, null, true, false, false);
+        } finally {
+            if (rs.currentResolutionContext == newrc)
+                rs.currentResolutionContext = null;
+        }
     }
 
     public void visitIdent(JCIdent tree) {
