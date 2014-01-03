@@ -271,6 +271,11 @@ public class Attr extends JCTree.Visitor {
                 return tree.type = resultInfo.pt;
             } else {
                 if ((ownkind & ~resultInfo.pkind) == 0) {
+                    JCExpression t = tryImplicitConversion(tree, owntype, resultInfo);
+                    if (t != null) {
+                        translateMap.put(tree, t);
+                        return tree.type = owntype;
+                    }
                     owntype = resultInfo.check(tree, owntype);
                 } else {
                     log.error(tree.pos(), "unexpected.type",
@@ -282,6 +287,32 @@ public class Attr extends JCTree.Visitor {
         }
         tree.type = owntype;
         return owntype;
+    }
+    /** try implicit conversion tree to pt type via #valueOf
+     * @return static valueOf method call iff successful. null otherwise */
+    JCMethodInvocation tryImplicitConversion(JCTree tree, Type owntype, ResultInfo resultInfo) {
+        if (!isBoxingAllowed(owntype, resultInfo.pt))
+            return null;
+        JCExpression param = translateMap.get(tree);
+        // construct "<req>.valueOf(tree)" static method call
+        tree.type = owntype;
+        JCMethodInvocation valueOf = make.Apply(null,
+                make.Select(make.Ident(resultInfo.pt.tsym), names.fromString("valueOf")),
+                List.of(param == null ? (JCExpression)tree : param));
+        valueOf.type = attribTree(valueOf, env, resultInfo);
+        return types.isAssignable(valueOf.type, resultInfo.pt) ? valueOf : null;
+    }
+    boolean isBoxingAllowed(Type found, Type req) {
+        // similar to Check#checkType
+        if (req.hasTag(ERROR))
+            return false;
+        if (req.hasTag(NONE))
+            return false;
+        if (types.isAssignable(found, req))
+            return false;
+        if (found.isNumeric() && req.isNumeric())
+            return false;
+        return true;
     }
 
     /** Is given blank final variable assignable, i.e. in a scope where it
@@ -3173,6 +3204,7 @@ public class Attr extends JCTree.Visitor {
     }
 
     private Symbol findMethod(Type site, String name, List<Type> argtypes) {
+        // TODO: alternatives: rs.lookupMethod or attribTree(new JCMethodInvocationExpression...)
         Resolve.MethodResolutionContext newrc = null;
         try {
             if (rs.currentResolutionContext == null) { // rc.findMethod requires resolution context
