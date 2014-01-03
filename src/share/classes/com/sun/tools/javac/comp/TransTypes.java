@@ -25,21 +25,23 @@
 
 package com.sun.tools.javac.comp;
 
-import java.util.*;
-
 import com.sun.tools.javac.code.*;
 import com.sun.tools.javac.code.Symbol.*;
-import com.sun.tools.javac.tree.*;
+import com.sun.tools.javac.jvm.ByteCodes;
+import com.sun.tools.javac.tree.JCTree;
 import com.sun.tools.javac.tree.JCTree.*;
+import com.sun.tools.javac.tree.TreeInfo;
+import com.sun.tools.javac.tree.TreeMaker;
+import com.sun.tools.javac.tree.TreeTranslator;
 import com.sun.tools.javac.util.*;
 import com.sun.tools.javac.util.JCDiagnostic.DiagnosticPosition;
-import com.sun.tools.javac.util.List;
+
+import java.util.HashMap;
+import java.util.Map;
 
 import static com.sun.tools.javac.code.Flags.*;
 import static com.sun.tools.javac.code.Kinds.*;
-import static com.sun.tools.javac.code.TypeTag.CLASS;
-import static com.sun.tools.javac.code.TypeTag.TYPEVAR;
-import static com.sun.tools.javac.code.TypeTag.VOID;
+import static com.sun.tools.javac.code.TypeTag.*;
 import static com.sun.tools.javac.comp.CompileStates.CompileState;
 
 /** This pass translates Generic Java to conventional Java.
@@ -71,6 +73,7 @@ public class TransTypes extends TreeTranslator {
     private boolean allowInterfaceBridges;
     private Types types;
     private final Resolve resolve;
+    private Attr attr;
 
     /**
      * Flag to indicate whether or not to generate bridge methods.
@@ -96,6 +99,7 @@ public class TransTypes extends TreeTranslator {
         types = Types.instance(context);
         make = TreeMaker.instance(context);
         resolve = Resolve.instance(context);
+        attr = Attr.instance(context);
     }
 
     /** A hashtable mapping bridge methods to the methods they override after
@@ -481,6 +485,14 @@ public class TransTypes extends TreeTranslator {
      */
     private Type pt;
 
+    @Override @SuppressWarnings("unchecked")
+    public <T extends JCTree> T translate(T tree) {
+        JCExpression t = attr.translateMap.remove(tree);
+        if (t!=null)
+            return (T) translate(t);
+        return super.translate(tree);
+    }
+
     /** Visitor method: perform a type translation on tree.
      */
     public <T extends JCTree> T translate(T tree, Type pt) {
@@ -735,11 +747,47 @@ public class TransTypes extends TreeTranslator {
     }
 
     public void visitUnary(JCUnary tree) {
+        if (tree.operator instanceof OperatorSymbol) {
+            // similar to #visitBinary
+            OperatorSymbol os = (OperatorSymbol) tree.operator;
+            if (os.opcode == ByteCodes.error+1) {
+                MethodSymbol ms = (MethodSymbol) os.owner;
+                JCFieldAccess meth = make.Select(tree.arg, ms.name);
+                meth.type = ms.type;
+                meth.sym = ms;
+                result = make.Apply(null, meth, List.<JCExpression>nil())
+                        .setType(tree.type);
+                result = translate(result);
+                return;
+            }
+        }
         tree.arg = translate(tree.arg, tree.operator.type.getParameterTypes().head);
         result = tree;
     }
 
     public void visitBinary(JCBinary tree) {
+        if (tree.operator instanceof OperatorSymbol) {
+            OperatorSymbol os = (OperatorSymbol) tree.operator;
+            if (os.opcode == ByteCodes.error+1) { // if operator overloading?
+                MethodSymbol ms = (MethodSymbol) os.owner;
+                // construct method invocation ast
+                JCFieldAccess meth = make.Select(tree.lhs, ms.name);
+                meth.type = ms.type;
+                meth.sym = ms;
+                result = make.Apply(null, meth, List.of(tree.rhs))
+                        .setType( ((Type.MethodType)ms.type).restype ); // tree.type may be != ms.type.restype. see below
+                if (ms.name.contentEquals("compareTo")) {
+                    // rewrite to `left.compareTo(right) </> 0`
+                    JCLiteral zero = make.Literal(0);
+                    JCBinary r = make.Binary(tree.getTag(), (JCExpression) result, zero);
+                    r.type = syms.booleanType;
+                    r.operator = resolve.resolveBinaryOperator(tree, tree.getTag(), env, result.type, zero.type);
+                    result = r;
+                }
+                result = translate(result);
+                return;
+            }
+        }
         tree.lhs = translate(tree.lhs, tree.operator.type.getParameterTypes().head);
         tree.rhs = translate(tree.rhs, tree.operator.type.getParameterTypes().tail.head);
         result = tree;

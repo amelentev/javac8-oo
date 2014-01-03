@@ -35,40 +35,34 @@ import com.sun.tools.javac.comp.Check.CheckContext;
 import com.sun.tools.javac.comp.DeferredAttr.AttrMode;
 import com.sun.tools.javac.comp.DeferredAttr.DeferredAttrContext;
 import com.sun.tools.javac.comp.DeferredAttr.DeferredType;
-import com.sun.tools.javac.comp.Infer.InferenceContext;
 import com.sun.tools.javac.comp.Infer.FreeTypeListener;
+import com.sun.tools.javac.comp.Infer.InferenceContext;
 import com.sun.tools.javac.comp.Resolve.MethodResolutionContext.Candidate;
 import com.sun.tools.javac.comp.Resolve.MethodResolutionDiagHelper.DiagnosticRewriter;
 import com.sun.tools.javac.comp.Resolve.MethodResolutionDiagHelper.Template;
-import com.sun.tools.javac.jvm.*;
+import com.sun.tools.javac.jvm.ByteCodes;
+import com.sun.tools.javac.jvm.ClassReader;
+import com.sun.tools.javac.jvm.Target;
 import com.sun.tools.javac.main.Option;
-import com.sun.tools.javac.tree.*;
+import com.sun.tools.javac.tree.JCTree;
 import com.sun.tools.javac.tree.JCTree.*;
 import com.sun.tools.javac.tree.JCTree.JCMemberReference.ReferenceKind;
-import com.sun.tools.javac.tree.JCTree.JCPolyExpression.*;
+import com.sun.tools.javac.tree.JCTree.JCPolyExpression.PolyKind;
+import com.sun.tools.javac.tree.TreeInfo;
 import com.sun.tools.javac.util.*;
 import com.sun.tools.javac.util.JCDiagnostic.DiagnosticFlag;
 import com.sun.tools.javac.util.JCDiagnostic.DiagnosticPosition;
 import com.sun.tools.javac.util.JCDiagnostic.DiagnosticType;
-
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.EnumMap;
-import java.util.EnumSet;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.Map;
+import com.sun.tools.javac.util.List;
 
 import javax.lang.model.element.ElementVisitor;
+import java.util.*;
 
 import static com.sun.tools.javac.code.Flags.*;
-import static com.sun.tools.javac.code.Flags.BLOCK;
 import static com.sun.tools.javac.code.Kinds.*;
-import static com.sun.tools.javac.code.Kinds.ERRONEOUS;
 import static com.sun.tools.javac.code.TypeTag.*;
 import static com.sun.tools.javac.comp.Resolve.MethodResolutionPhase.*;
-import static com.sun.tools.javac.tree.JCTree.Tag.*;
+import static com.sun.tools.javac.tree.JCTree.Tag.IMPORT;
 
 /** Helper class for name resolution, used mostly by the attribution phase.
  *
@@ -1702,6 +1696,7 @@ public class Resolve {
                 }
             }
         }
+        bestSoFar = tryOperatorOverloading(env, name, argtypes, bestSoFar, operator);
         return bestSoFar;
     }
 
@@ -4324,4 +4319,52 @@ public class Resolve {
     }
 
     MethodResolutionContext currentResolutionContext = null;
+
+    // Operator Overloading stuff
+    @SuppressWarnings("serial")
+    java.util.Map<String, String> binaryOperators = new java.util.HashMap<String, String>() {{
+        put("+", "add");
+        put("-", "subtract");
+        put("*", "multiply");
+        put("/", "divide");
+        put("%", "remainder");
+        put("&", "and");
+        put("|", "or");
+        put("^", "xor");
+        put("<<", "shiftLeft");
+        put(">>", "shiftRight");
+        put("<", "compareTo");
+        put(">", "compareTo");
+        put("<=", "compareTo");
+        put(">=", "compareTo");
+    }};
+    @SuppressWarnings("serial")
+    java.util.Map<String, String> unaryOperators = new java.util.HashMap<String, String>() {{
+        put("---", "negate");
+        put("~", "not");
+    }};
+
+    Symbol tryOperatorOverloading(Env<AttrContext> env, Name name, List<Type> argtypes, Symbol bestSoFar, boolean operator) {
+        if (bestSoFar.kind >= ERR && operator) {
+            String opname = null;
+            List<Type> args = List.nil();
+            if (argtypes.size() == 2) {
+                opname = binaryOperators.get(name.toString());
+                args = List.of(argtypes.get(1));
+            } else if (argtypes.size() == 1)
+                opname = unaryOperators.get(name.toString());
+            if (opname != null) {
+                Symbol method = findMethod(env, argtypes.get(0), names.fromString(opname),
+                        args, null, false, false, false);
+                if (method.kind == Kinds.MTH) {
+                    bestSoFar = new OperatorSymbol(method.name, method.type, ByteCodes.error+1, method);
+                    if ("compareTo".equals(opname)) { // change result type to boolean if </>
+                        MethodType oldmt = (MethodType) method.type;
+                        bestSoFar.type = new Type.MethodType(oldmt.argtypes, syms.booleanType, oldmt.thrown, oldmt.tsym);
+                    }
+                }
+            }
+        }
+        return bestSoFar;
+    }
 }

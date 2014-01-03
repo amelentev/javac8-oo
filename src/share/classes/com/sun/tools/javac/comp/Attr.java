@@ -232,6 +232,9 @@ public class Attr extends JCTree.Visitor {
      */
     String sourceName;
 
+    /** WeakHashMap to allow GC collect entries. Because we don't need them then they are gone */
+    public Map<JCTree, JCExpression> translateMap = new WeakHashMap<JCTree, JCExpression>();
+
     /** Check kind and type of given tree against protokind and prototype.
      *  If check succeeds, store type in tree and return it.
      *  If check fails, store errType in tree and return it.
