@@ -4,8 +4,7 @@ import java.io.File;
 
 public class JCOOTest {
     public static void main(String[] args) throws Exception {
-        System.out.println(new File(".").getAbsolutePath());
-        //compile("ValueOf");
+        compile("ValueOf");
         compile("Math");
         compile("Cmp");
         compile("ListIndexGet");
@@ -13,6 +12,7 @@ public class JCOOTest {
         compile("MapIndex");
         compile("Vector");
         compile("CompAss", "../tests");
+        compile("Boxing", "../tests");
     }
     public static void compile(String clas) throws  Exception {
         compile(clas, "../examples");
