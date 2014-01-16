@@ -291,7 +291,7 @@ public class Attr extends JCTree.Visitor {
     /** try implicit conversion tree to pt type via #valueOf
      * @return static valueOf method call iff successful. null otherwise */
     JCMethodInvocation tryImplicitConversion(JCTree tree, Type owntype, ResultInfo resultInfo) {
-        if (!isBoxingAllowed(owntype, resultInfo.pt))
+        if (!isImplicitConversionAllowed(owntype, resultInfo.pt))
             return null;
         JCExpression param = translateMap.get(tree);
         // construct "<req>.valueOf(tree)" static method call
@@ -303,15 +303,9 @@ public class Attr extends JCTree.Visitor {
         valueOf.type = attribTree(valueOf, env, resultInfo);
         return types.isAssignable(valueOf.type, resultInfo.pt) ? valueOf : null;
     }
-    boolean isBoxingAllowed(Type found, Type req) {
+    boolean isImplicitConversionAllowed(Type found, Type req) {
         // similar to Check#checkType
-        if (req.hasTag(ERROR))
-            return false;
-        if (req.hasTag(NONE))
-            return false;
-        if (types.isAssignable(found, req))
-            return false;
-        if (found.isNumeric() && req.isNumeric())
+        if (req.hasTag(ERROR) || req.hasTag(NONE) || types.isAssignable(found, req) || found.isNumeric() && req.isNumeric())
             return false;
         return findMethods(req, List.of(found), "valueOf") != null;
     }
