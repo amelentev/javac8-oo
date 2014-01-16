@@ -1642,7 +1642,7 @@ public class Resolve {
                           allowBoxing,
                           useVarargs,
                           operator);
-        return bestSoFar;
+        return tryOperatorOverloading(env, name, argtypes, bestSoFar, operator);
     }
     // where
     private Symbol findMethod(Env<AttrContext> env,
@@ -1696,7 +1696,6 @@ public class Resolve {
                 }
             }
         }
-        bestSoFar = tryOperatorOverloading(env, name, argtypes, bestSoFar, operator);
         return bestSoFar;
     }
 

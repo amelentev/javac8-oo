@@ -296,6 +296,7 @@ public class Attr extends JCTree.Visitor {
         JCExpression param = translateMap.get(tree);
         // construct "<req>.valueOf(tree)" static method call
         tree.type = owntype;
+        make.pos = tree.pos;
         JCMethodInvocation valueOf = make.Apply(null,
                 make.Select(make.Ident(resultInfo.pt.tsym), names.fromString("valueOf")),
                 List.of(param == null ? (JCExpression)tree : param));
@@ -312,7 +313,7 @@ public class Attr extends JCTree.Visitor {
             return false;
         if (found.isNumeric() && req.isNumeric())
             return false;
-        return true;
+        return findMethods(req, List.of(found), "valueOf") != null;
     }
 
     /** Is given blank final variable assignable, i.e. in a scope where it
@@ -2990,6 +2991,24 @@ public class Attr extends JCTree.Visitor {
     }
 
     public void visitAssign(JCAssign tree) {
+        if (tree.lhs.getKind() == Tree.Kind.ARRAY_ACCESS) { // index-set OO: "a[i] = v"
+            JCArrayAccess aa = (JCArrayAccess) tree.lhs;
+            Type atype = attribExpr(aa.indexed, env);
+            if (!atype.isErroneous() && !types.isArray(atype)) {
+                Type itype = attribExpr(aa.index, env);
+                Type rhstype = attribExpr(tree.rhs, env);
+                Symbol m = findMethods(atype, List.of(itype, rhstype), "set", "put");
+                if (m != null) {
+                    JCMethodInvocation mi = make.Apply(null, make.Select(aa.indexed, m), List.of(aa.index, tree.rhs));
+                    Type owntype = attribExpr(mi, env);
+                    translateMap.put(tree, mi);
+                    aa.type = rhstype;
+                    check(aa, aa.type, VAR, resultInfo);
+                    result = check(tree, owntype, VAL, resultInfo);
+                    return;
+                }
+            }
+        }
         Type owntype = attribTree(tree.lhs, env.dup(tree), varInfo);
         Type capturedType = capture(owntype);
         attribExpr(tree.rhs, env, owntype);
@@ -3169,40 +3188,22 @@ public class Attr extends JCTree.Visitor {
         if (types.isArray(atype)) {
             attribExpr(tree.index, env, syms.intType);
             owntype = types.elemtype(atype);
-        } else if (!atype.hasTag(ERROR)) {
+        } else if (!atype.isErroneous()) {
             attribExpr(tree.index, env);
-            boolean ok = false;
-            if (env.tree.getKind() == Tree.Kind.ASSIGNMENT && ((JCAssign)env.tree).lhs == tree) {
-                JCAssign ass = (JCAssign) env.tree;
-                Type rhstype = attribExpr(ass.rhs, env);
-                List<Type> argtypes = List.of(tree.index.type, rhstype);
-                Symbol m = findMethod(atype, "set", argtypes);
-                if (m.kind != Kinds.MTH)
-                    m = findMethod(atype, "put", argtypes); // Map#put
-                if (m.kind == Kinds.MTH) {
-                    JCMethodInvocation mi = make.Apply(null, make.Select(tree.indexed, m), List.of(tree.index, ass.rhs));
-                    owntype = mi.type = attribExpr(mi, env);
-                    translateMap.put(ass, mi);
-                    ok = true;
-                }
-            } else {
-                Symbol m = findMethod(atype, "get", List.of(tree.index.type));
-                if (m.kind == Kinds.MTH) {
-                    JCMethodInvocation mi = make.Apply(null, make.Select(tree.indexed, m), List.of(tree.index));
-                    attribExpr(mi, env);
-                    translateMap.put(tree, mi);
-                    owntype = mi.type;
-                    ok = true;
-                }
-            }
-            if (!ok)
+            Symbol m = findMethods(atype, List.of(tree.index.type), "get");
+            if (m != null) {
+                JCMethodInvocation mi = make.Apply(null, make.Select(tree.indexed, m), List.of(tree.index));
+                attribExpr(mi, env);
+                translateMap.put(tree, mi);
+                owntype = mi.type;
+            } else
                 log.error(tree.pos(), "array.req.but.found", atype);
         }
         if ((pkind() & VAR) == 0) owntype = capture(owntype);
         result = check(tree, owntype, VAR, resultInfo);
     }
 
-    private Symbol findMethod(Type site, String name, List<Type> argtypes) {
+    private Symbol findMethods(Type site, List<Type> argts, String... methodNames) {
         // TODO: alternatives: rs.lookupMethod or attribTree(new JCMethodInvocationExpression...)
         Resolve.MethodResolutionContext newrc = null;
         try {
@@ -3212,7 +3213,13 @@ public class Attr extends JCTree.Visitor {
                 newrc.methodCheck = rs.resolveMethodCheck;
                 rs.currentResolutionContext = newrc;
             }
-            return rs.findMethod(env, site, names.fromString(name), argtypes, null, true, false, false);
+            for (String methodName: methodNames) {
+                Symbol m = rs.findMethod(env, site, names.fromString(methodName), argts, null, true, false, false);
+                if (m.kind == Kinds.MTH) return m;
+                m = rs.findMethod(env, site, names.fromString(methodName), argts, null, true, false, false); // with boxing
+                if (m.kind == Kinds.MTH) return m;
+            }
+            return null;
         } finally {
             if (rs.currentResolutionContext == newrc)
                 rs.currentResolutionContext = null;
